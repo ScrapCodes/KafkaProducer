@@ -50,7 +50,7 @@ class BenchmarkingProducer extends AutoCloseable {
     val assignment: util.Set[TopicPartition] = consumer.assignment()
     if (assignment.isEmpty) println("Empty assignments")
     var count = 0l
-    consumer.seekToEnd(assignment)
+    // consumer.seekToEnd(assignment)
     val lastOffsets: mutable.Set[(TopicPartition, Long)] =
       assignment.map(p => (p, consumer.position(p)))
     println(s"Last offset: $lastOffsets")

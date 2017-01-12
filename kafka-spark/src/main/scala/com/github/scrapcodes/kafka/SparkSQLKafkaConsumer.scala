@@ -47,6 +47,8 @@ object SparkSQLKafkaConsumer {
       .builder
       //.config("spark.sql.streaming.stateStore.maintenanceInterval", "3600s")
       //.config("spark.sql.streaming.stateStore.minDeltasForSnapshot", "100000")
+      // .config("spark.cleaner.referenceTracking.blocking", "false")
+      .config("spark.cleaner.periodicGC.interval", "2min")
       .config("spark.sql.warehouse.dir", "/mnt/tmpfs/test")
       .config("spark.sql.streaming.checkpointLocation", "/mnt/tmpfs/")
       .appName("StructuredKafkaWordCount")
@@ -63,20 +65,20 @@ object SparkSQLKafkaConsumer {
 
     // Split the lines into messages
     val messages = lines.select("key", "value").as[(Array[Byte], Array[Byte])]
-      .map(x => (deserialize(null, x._1), new String(x._2)))
-    val meanTimeDelay:
-    Dataset[(Long, String)] = messages.select(
-      $"_1".as("time_sent"),
-      $"_2".as("messages")).as[(Long, String)]
-      // In this aggregation latency will be added ...
-      //.groupBy($"messages", $"time_sent").agg($"time_sent", count($"messages").as("count"))
-      //  In this aggregation, latency will be constant ...
-      // .groupBy($"messages").agg(count($"time_sent"))
-      .select($"time_sent", $"messages").as[(Long, String)]
+
+    //    val meanTimeDelay:
+    //    Dataset[(Long, String)] = messages.select(
+    //      $"_1".as("time_sent"),
+    //      $"_2".as("messages")).as[(Long, String)]
+    //      // In this aggregation latency will be added ...
+    //      //.groupBy($"messages", $"time_sent").agg($"time_sent", count($"messages").as("count"))
+    //      //  In this aggregation, latency will be constant ...
+    //      // .groupBy($"messages").agg(count($"time_sent"))
+    //      .select($"time_sent", $"messages").as[(Long, String)]
 
 
     val kafkaWriter: KafkaWriter = new KafkaWriter
-    val query = meanTimeDelay.writeStream.outputMode("append").trigger(ProcessingTime(0l))
+    val query = messages.writeStream.outputMode("append").trigger(ProcessingTime(50l))
       .foreach(kafkaWriter).start()
 
     query.awaitTermination()
@@ -87,19 +89,19 @@ object SparkSQLKafkaConsumer {
 object KafkaWriter {
   private lazy val kafkaProducer = initialize(SparkSQLKafkaConsumer.brokerUrl)
 
-  def initialize(brokerUrl: String): (KafkaProducer[Long, String]) = {
+  def initialize(brokerUrl: String): (KafkaProducer[Array[Byte], Array[Byte]]) = {
     val props = new Properties()
     props.put("bootstrap.servers", brokerUrl)
     props.put("acks", "0")
     props.put("retries", "0")
-    props.put("batch.size", "100")
+    props.put("batch.size", "100000")
     props.put("linger.ms", "1")
     props.put("group.id", "kafka-spark-out-test")
     props.put("compression.type", "snappy")
-    props.put("buffer.memory", "409600")
-    props.put("key.serializer", "org.apache.kafka.common.serialization.LongSerializer")
-    props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer")
-    new KafkaProducer[Long, String](props)
+    props.put("buffer.memory", "4096000")
+    props.put("key.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer")
+    props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer")
+    new KafkaProducer[Array[Byte], Array[Byte]](props)
   }
 
   def close(): Unit = {
@@ -107,17 +109,18 @@ object KafkaWriter {
   }
 }
 
-class KafkaWriter extends ForeachWriter[(Long, String)] {
-  private lazy val kafkaProducer: KafkaProducer[Long, String] = KafkaWriter.kafkaProducer
+class KafkaWriter extends ForeachWriter[(Array[Byte], Array[Byte])] {
+  private lazy val kafkaProducer: KafkaProducer[Array[Byte], Array[Byte]] = KafkaWriter
+    .kafkaProducer
 
   def open(partitionId: Long, version: Long): Boolean = {
     true
   }
 
-  def process(value: (Long, String)): Unit = {
+  def process(value: (Array[Byte], Array[Byte])): Unit = {
     val start = System.currentTimeMillis()
     kafkaProducer.send(
-      new ProducerRecord[Long, String](SparkSQLKafkaConsumer.outputTopic, value._1, value._2))
+      new ProducerRecord[Array[Byte], Array[Byte]]("output", value._1, value._2))
     val end = System.currentTimeMillis()
     if (end - start > 5) {
       println(s"$start Send took ${end - start}ms to write to kafka for record. ${value._1}.")
